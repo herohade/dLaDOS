@@ -1,0 +1,18 @@
+# Secrets and repo metadata never go into a build context
+.env
+.git
+.github
+
+# Local runs of the bot (outside Docker)
+bot/node_modules
+bot/.venv
+bot/logs
+bot/recordings
+bot/audio/speech*.mp3
+
+# Not needed by any image
+assets
+*.md
+LICENSE
+docker-compose*.yml
+run.sh

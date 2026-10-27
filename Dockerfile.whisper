@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.11-slim-trixie
 ENV DEBIAN_FRONTEND=noninteractive
 
 # ffmpeg is required by faster-whisper for audio decoding
@@ -7,22 +7,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   curl \
   && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
-
 # Install Python dependencies
 # faster-whisper: ~4x faster than openai-whisper, lower memory, int8 CPU mode
 RUN pip install --no-cache-dir \
-  faster-whisper \
-  fastapi \
-  "uvicorn[standard]" \
-  python-multipart
+  faster-whisper==1.2.1 \
+  fastapi==0.162.0 \
+  "uvicorn[standard]==0.54.0" \
+  python-multipart==0.0.32
+
+RUN useradd -m -u 1000 whisper
+USER whisper
+WORKDIR /app
+
+# The model is downloaded at build time, so the container needs no internet access.
+# Change WHISPER_MODEL in .env and rebuild (./run.sh up --build whisper) to switch.
+ARG WHISPER_MODEL=base
+ENV WHISPER_MODEL=${WHISPER_MODEL}
+RUN python -c "import os; from faster_whisper import WhisperModel; WhisperModel(os.environ['WHISPER_MODEL'], device='cpu', compute_type='int8')"
+ENV HF_HUB_OFFLINE=1
 
 COPY whisper_service.py .
 
 EXPOSE 9000
-
-# WHISPER_MODEL is read at runtime; override in docker-compose or .env
-ENV WHISPER_MODEL=base
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 \
   CMD curl -f http://localhost:9000/health || exit 1

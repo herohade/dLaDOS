@@ -1,0 +1,9 @@
+# Secrets (DISCORD_TOKEN)
+.env
+
+# Runtime output of the bot when run outside Docker
+bot/node_modules/
+bot/.venv/
+bot/logs/
+bot/recordings/
+bot/audio/speech*.mp3

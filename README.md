@@ -68,7 +68,7 @@ No cloud APIs. No subscriptions. No cake.
               ▼
 ┌─────────────────────────────────────┐
 │  🔵  voice  (port 5050)             │  dnhkng/GlaDOS TTS engine
-│       Text → GLaDOS's voice         │  Cloned from GitHub at build time
+│       Text → GLaDOS's voice         │  Prebuilt GLaDOS image
 └─────────────┬───────────────────────┘
               │  MP3 → FFmpeg → PCM @ 48 kHz stereo
               ▼
@@ -127,10 +127,12 @@ See [Configuration](#%EF%B8%8F-configuration) for all options.
 ### 3. Start
 
 ```bash
-./run.sh up --build
+./run.sh up
 ```
 
-`run.sh` detects your GPU vendor (AMD/NVIDIA/CPU) and passes the right Docker Compose overlay automatically. All services start together — the bot waits for the others to be healthy before connecting. On first run, the `voice` container downloads TTS model weights (~2–4 GB) into a Docker volume — this only happens once.
+`run.sh` detects your GPU vendor (AMD/NVIDIA/CPU) and passes the right Docker Compose overlay automatically. All services start together — the bot waits for the others to be healthy before connecting. The images are prebuilt for x86-64 and ARM64 and include their models (the GLaDOS voice and the Whisper model), so they are pulled, not built, and start fast. If an image can't be pulled, it is built from this repo; `./run.sh up --build` always builds the bot and Whisper locally.
+
+Nothing is published on the host: Ollama, Whisper and the voice service have no authentication, so they only reach each other on an internal Docker network. To use Ollama from the host, `docker exec ollama ollama ...` still works.
 
 > **Manual override:** `docker compose -f docker-compose.yml -f docker-compose.amd.yml up --build`
 
@@ -167,7 +169,8 @@ Copy `.env.example` to `.env` and edit. Full reference in [`.env.example`](.env.
 | `TTS_VOICE` | `glados` | Voice name passed to the TTS engine |
 | `MAX_CONVERSATION_CHARS` | `6000` | Per-session history budget; older messages are dropped |
 | `GLADOS_SYSTEM_PROMPT` | *(built-in)* | Override the GLaDOS personality prompt |
-| `GLADOS_REF` | `main` | Branch/tag/SHA of dnhkng/GlaDOS to build against |
+| `VOICE_IMAGE` | `ghcr.io/herohade/glados:latest` | GLaDOS TTS image for the voice service |
+| `IMAGE_OWNER` | `herohade` | GHCR owner of the prebuilt bot and Whisper images |
 
 ---
 
@@ -199,8 +202,11 @@ docker exec ollama ollama pull qwen2.5:3b-instruct
 
 ```bash
 # Set WHISPER_MODEL=small in .env, then:
-./run.sh up --build whisper
+./run.sh up -d whisper
 ```
+
+`tiny`, `base`, `small` and `medium` are prebuilt (one image per model, the model inside). Any other faster-whisper
+model (e.g. `large-v3`) is built locally: `./run.sh up -d --build whisper`.
 
 ---
 
@@ -218,11 +224,12 @@ node src/bot.js
 
 You'll need a reachable Ollama instance and GLaDOS TTS service. Point `OLLAMA_ENDPOINT` and `TTS_ENDPOINT` at them. Leave `WHISPER_ENDPOINT` unset to fall back to in-process transcription (slow; loads openai-whisper locally).
 
-### Pinning the GLaDOS TTS version
+### Docker images
 
-```bash
-GLADOS_REF=v1.2.3 ./run.sh build voice
-```
+`.github/workflows/docker-build.yml` builds the bot and the Whisper images on every push to `main` that touches
+them, natively for x86-64 and ARM64, and pushes them to GHCR (`ghcr.io/<owner>/dlados-bot`,
+`ghcr.io/<owner>/dlados-whisper:<model>`). The voice service uses the GLaDOS image; pin it with
+`VOICE_IMAGE=ghcr.io/herohade/glados:sha-<commit>`.
 
 ### Logs
 

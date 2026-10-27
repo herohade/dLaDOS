@@ -6,7 +6,7 @@
 services:
 
   ollama:
-    image: ollama/ollama
+    image: ollama/ollama:0.40.11
     deploy:
       resources:
         reservations:

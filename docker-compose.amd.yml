@@ -5,12 +5,10 @@
 services:
 
   ollama:
-    image: ollama/ollama:rocm
+    image: ollama/ollama:0.40.11-rocm
     devices:
       - /dev/kfd
       - /dev/dri
     group_add:
       - video
-    security_opt:
-      - seccomp=unconfined
 

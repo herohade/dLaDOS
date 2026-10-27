@@ -1,34 +1,35 @@
-FROM ubuntu:latest
-ENV DEBIAN_FRONTEND=noninteractive
+FROM node:22-bookworm-slim AS deps
 
-RUN apt-get update && apt-get install -y \
-  ca-certificates curl \
-  python3 python3-venv python3-pip \
-  ffmpeg \
-  build-essential \
-  && rm -rf /var/lib/apt/lists/*
-
-# Node.js 22 LTS
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-  && apt-get update && apt-get install -y nodejs \
+# Build tools only in this stage, in case a native module (@discordjs/opus) has no prebuilt binary
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Python venv (avoids PEP 668)
-RUN python3 -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
+# Exactly the versions in package-lock.json
+COPY bot/package.json bot/package-lock.json ./
+RUN npm ci --omit=dev
 
-# Copy package manifest first for layer caching
-COPY bot/package.json ./
+FROM node:22-bookworm-slim
 
-RUN npm install --omit=dev
-
-COPY bot/ ./
-
-# Only 'requests' is needed — WHISPER_ENDPOINT routes transcription to the
+# Only 'requests' is needed for the Python helpers — WHISPER_ENDPOINT routes transcription to the
 # whisper container, so openai-whisper (and PyTorch, ~2 GB) are never used here.
 # For local dev without Docker, install the full requirements.txt instead.
-RUN pip install --no-cache-dir requests
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  ca-certificates \
+  ffmpeg \
+  python3 python3-requests \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY --from=deps /app/node_modules ./node_modules
+COPY bot/ ./
+
+# Runtime directories the bot writes to; everything else stays read-only for the bot user
+RUN mkdir -p audio logs recordings && chown -R node:node audio logs recordings
+
+USER node
+ENV NODE_ENV=production PYTHON=python3
 
 CMD ["node", "src/bot.js"]

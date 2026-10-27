@@ -1,0 +1,168 @@
+name: Build and Push Docker Images
+
+# Images (owner = this repo's owner, lowercased):
+#   ghcr.io/<owner>/dlados-bot:latest                        + sha-<commit>
+#   ghcr.io/<owner>/dlados-whisper:<model>  (tiny...medium)  + <model>-sha-<commit>
+# Each image is built natively on an x86 and an ARM runner (no QEMU), then the two are joined into one
+# multi-arch tag. The voice service uses the prebuilt GLaDOS image, so nothing is built for it here.
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'Dockerfile.*'
+      - '.dockerignore'
+      - 'bot/**'
+      - 'whisper_service.py'
+      - '.github/workflows/docker-build.yml'
+  workflow_dispatch:
+
+# A newer push to main replaces a running build
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Nothing by default; each job asks for what it needs
+permissions: {}
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  # The image list, once, for both matrices below
+  targets:
+    runs-on: ubuntu-latest
+    outputs:
+      list: ${{ steps.list.outputs.list }}
+    steps:
+      - id: list
+        run: |
+          list=$(jq -c . <<'EOF'
+          [
+            {"key": "bot", "image": "dlados-bot", "dockerfile": "Dockerfile.bot", "model": ""},
+            {"key": "whisper-tiny", "image": "dlados-whisper", "dockerfile": "Dockerfile.whisper", "model": "tiny"},
+            {"key": "whisper-base", "image": "dlados-whisper", "dockerfile": "Dockerfile.whisper", "model": "base"},
+            {"key": "whisper-small", "image": "dlados-whisper", "dockerfile": "Dockerfile.whisper", "model": "small"},
+            {"key": "whisper-medium", "image": "dlados-whisper", "dockerfile": "Dockerfile.whisper", "model": "medium"}
+          ]
+          EOF
+          )
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: targets
+    runs-on: ${{ matrix.platform.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.targets.outputs.list) }}
+        platform:
+          - { name: linux/amd64, pair: amd64, runner: ubuntu-24.04 }
+          - { name: linux/arm64, pair: arm64, runner: ubuntu-24.04-arm }
+
+    steps:
+      # Tip: pin these actions to full commit SHAs (e.g. `pinact run`): this job holds a packages:write token
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Image name
+        run: echo "IMAGE=${REGISTRY}/${GITHUB_REPOSITORY_OWNER,,}/${{ matrix.target.image }}" >> "$GITHUB_ENV"
+
+      - name: Labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.target.dockerfile }}
+          platforms: ${{ matrix.platform.name }}
+          build-args: ${{ matrix.target.model && format('WHISPER_MODEL={0}', matrix.target.model) || '' }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.target.key }}-${{ matrix.platform.pair }}
+          cache-to: type=gha,scope=${{ matrix.target.key }}-${{ matrix.platform.pair }},mode=max
+
+      - name: Export digest
+        run: |
+          mkdir -p "${{ runner.temp }}/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.target.key }}-${{ matrix.platform.pair }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: [targets, build]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.targets.outputs.list) }}
+
+    steps:
+      - name: Image name
+        run: echo "IMAGE=${REGISTRY}/${GITHUB_REPOSITORY_OWNER,,}/${{ matrix.target.image }}" >> "$GITHUB_ENV"
+
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-${{ matrix.target.key }}-*
+          merge-multiple: true
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=${{ matrix.target.model || 'latest' }},enable={{is_default_branch}}
+            type=sha,prefix=${{ matrix.target.model && format('{0}-sha-', matrix.target.model) || 'sha-' }}
+
+      - name: Create multi-arch manifest and push
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          mapfile -t tags < <(jq -r '.tags[] | "-t", .' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          sources=()
+          for digest in *; do sources+=("${IMAGE}@sha256:${digest}"); done
+          docker buildx imagetools create "${tags[@]}" "${sources[@]}"
+
+      - name: Inspect image
+        run: docker buildx imagetools inspect "${IMAGE}:${{ steps.meta.outputs.version }}"

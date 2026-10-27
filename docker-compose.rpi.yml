@@ -35,8 +35,10 @@ services:
 
   whisper:
     platform: linux/arm64
-    environment:
-      - WHISPER_MODEL=${WHISPER_MODEL:-tiny}
+    image: ghcr.io/${IMAGE_OWNER:-herohade}/dlados-whisper:${WHISPER_MODEL:-tiny}
+    build:
+      args:
+        WHISPER_MODEL: ${WHISPER_MODEL:-tiny}   # baked into the image at build time
     deploy:
       resources:
         limits:
